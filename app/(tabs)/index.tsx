@@ -8,69 +8,60 @@ const { width, height } = Dimensions.get('window');
 const DOT_SIZE = 50;
 const SHAKE_THRESHOLD = 1.5;
 const SHAKE_MULTIPLIER = 70;
+const SOUND_DELAY = 248.8;
+const RECT_HEIGHT = height * 0.35;
 const CENTER_POSITION = { x: width / 2 - DOT_SIZE / 2, y: height / 2 - DOT_SIZE / 2 };
 
-const RECT_HEIGHT = height * 0.35;
-const RECT_WIDTH = width;
 const RECT_X = 0;
+const RECT_WIDTH = width;
 const TOP_RECT_Y = height / 2 - RECT_HEIGHT;
 const BOTTOM_RECT_Y = height / 2;
-const SOUND_DELAY = 229;
 
 export default function App() {
   const positionAnim = useRef(new Animated.ValueXY(CENTER_POSITION)).current;
   const lastAcceleration = useRef({ x: 0, y: 0 });
   const moveBackTimeout = useRef(null);
-  const [isInRect, setIsInRect] = useState(false);
   const lastSoundTime = useRef(0);
+  const lastShakeTime = useRef(Date.now());
+  const [isInRect, setIsInRect] = useState(false);
 
-  const playSound = async () => {
+  const playSound = async (file) => {
     const currentTime = Date.now();
-
     if (currentTime - lastSoundTime.current > SOUND_DELAY) {
-      const { sound } = await Audio.Sound.createAsync(require('../../assets/sounds/hit.mp3'), {
-        isLooping: false,
-        volume: 1,
-      });
-
+      const { sound } = await Audio.Sound.createAsync(file, { isLooping: false, volume: 1 });
       await sound.playAsync();
-
       sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isPlaying) {
-          sound.unloadAsync();
-        }
+        if (!status.isPlaying) sound.unloadAsync();
       });
-
       lastSoundTime.current = currentTime;
     }
   };
 
-  const triggerFeedback = () => {
-    Vibration.vibrate(100);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+  const triggerFeedback = (speed) => {
+    const hapticStyle =
+      speed > 2.5
+        ? Haptics.ImpactFeedbackStyle.Heavy
+        : speed > 1.8
+        ? Haptics.ImpactFeedbackStyle.Medium
+        : Haptics.ImpactFeedbackStyle.Light;
+
+    const vibrationDuration = speed * 50; // Dynamic vibration based on speed
+    Vibration.vibrate(vibrationDuration);
+    Haptics.impactAsync(hapticStyle);
   };
 
-  const stopFeedback = () => {
-    Vibration.cancel();
-  };
-
-  const bounceEffect = (newX, newY) => {
+  const bounceToPosition = (x, y) => {
     Animated.spring(positionAnim, {
-      toValue: { x: newX, y: newY },
+      toValue: { x, y },
       bounciness: 10,
       speed: 12,
       useNativeDriver: false,
     }).start();
   };
 
-  const moveToCenter = () => {
-    Animated.spring(positionAnim, {
-      toValue: CENTER_POSITION,
-      useNativeDriver: false,
-      bounciness: 8,
-      speed: 12,
-    }).start();
-    setIsInRect(false);
+  const fallToBottom = () => {
+    const bottomY = BOTTOM_RECT_Y + RECT_HEIGHT - DOT_SIZE;
+    bounceToPosition(positionAnim.x._value, bottomY);
   };
 
   const isRectHit = (y) => {
@@ -84,38 +75,33 @@ export default function App() {
     const deltaX = x - lastAcceleration.current.x;
     const deltaY = y - lastAcceleration.current.y;
     const deltaZ = z - lastAcceleration.current.z;
-    const speed = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+    const speed = Math.sqrt(deltaX ** 2 + deltaY ** 2 + deltaZ ** 2);
 
     if (speed > SHAKE_THRESHOLD) {
-      let newX = positionAnim.x._value + x * SHAKE_MULTIPLIER;
-      let newY = positionAnim.y._value + y * SHAKE_MULTIPLIER;
+      lastShakeTime.current = Date.now();
 
-      // Apply boundaries within the rectangles
-      newX = Math.max(RECT_X, Math.min(RECT_WIDTH - DOT_SIZE, newX));
+      let newX = Math.max(RECT_X, Math.min(RECT_WIDTH - DOT_SIZE, positionAnim.x._value + x * SHAKE_MULTIPLIER));
+      let newY = Math.max(BOTTOM_RECT_Y, Math.min(BOTTOM_RECT_Y + RECT_HEIGHT - DOT_SIZE, positionAnim.y._value + y * SHAKE_MULTIPLIER));
 
-      if (positionAnim.y._value < height / 2) {
-        newY = Math.max(TOP_RECT_Y, Math.min(TOP_RECT_Y + RECT_HEIGHT - DOT_SIZE, newY));
-      } else {
-        newY = Math.max(BOTTOM_RECT_Y, Math.min(BOTTOM_RECT_Y + RECT_HEIGHT - DOT_SIZE, newY));
-      }
+      bounceToPosition(newX, newY);
 
-      // Apply bounce effect
-      bounceEffect(newX, newY);
-
-      // Trigger feedback and sound only if hitting the rectangle edges
       if (isRectHit(newY)) {
         if (!isInRect) {
-          triggerFeedback();
-          playSound();
+          triggerFeedback(speed);
+          playSound(require('../../assets/sounds/hit.mp3'));
           setIsInRect(true);
         }
       } else if (isInRect) {
         setIsInRect(false);
-        stopFeedback();
+        Vibration.cancel();
       }
 
       clearTimeout(moveBackTimeout.current);
-      moveBackTimeout.current = setTimeout(() => moveToCenter(), 1000);
+      moveBackTimeout.current = setTimeout(() => {
+        if (Date.now() - lastShakeTime.current > 500) {
+          fallToBottom();
+        }
+      }, 500);
     }
 
     lastAcceleration.current = { x, y, z };
@@ -123,9 +109,7 @@ export default function App() {
 
   useEffect(() => {
     const subscription = Accelerometer.addListener(handleShake);
-    return () => {
-      subscription.remove();
-    };
+    return () => subscription.remove();
   }, []);
 
   return (
@@ -148,7 +132,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: '100%',
     height: RECT_HEIGHT,
-    // backgroundColor: 'red',
+    backgroundColor: 'red',
   },
   topRect: {
     top: TOP_RECT_Y,
